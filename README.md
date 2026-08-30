@@ -1,11 +1,12 @@
 # Geoconding service - Maptiler task
 
-# Setup instructions
+## Setup instructions
 
 Download necessary packages
 - osm2pgsql
 - docker
 - lua
+- cargo
 
 Download a map for testing (e.g. czech-republic-latest), launch the db and init the db.
 ```sh
@@ -18,10 +19,27 @@ osm2pgsql -d geocoding -U test -H localhost -p 5432 -W \
 ```
 > This is meant to be a replacement for the Java preprocessing. Takes < 5 minutes for Czechia.
 
+Add line to `.env`:
+```sh
+echo 'DATABASE_URL=postgres://test:test@localhost:5432/geocoding' > .env
+```
+
+Run the service:
+```sh
+RUST_LOG=info cargo r
+```
+
+Query the service:
+```sh
+curl http://localhost:3000/geocoding/Praha.json
+curl http://localhost:3000/geocoding/14.4016,50.0910.json
+```
+
 
 TODO
 
-# Architectural decisions
+## Architectural decisions
+
 - Rust because of familiarity and time frame of implementation.
 - Copy the current MapTiler API:
     - (resp: 200/400/403)
@@ -108,24 +126,25 @@ FeatureCollection where every item is represented as a GeoJSON Feature
 }
 ```
 
-# Rationale behind the chosen tech stack
+## Rationale behind the chosen tech stack
 
-# Future improvements or scalability strategies
+## Future improvements or scalability strategies
 
-# Consideration
-## One of our input database is OpenStreetMap
-## The server is now using TypeScript
-## Data are being pre-processed by Java
+## Consideration
+### One of our input database is OpenStreetMap
+### The server is now using TypeScript
+### Data are being pre-processed by Java
 
-## Data sources
+### Data sources (Research)
 
-### OpenStreetMap (geofabrik)
+**OpenStreetMap (geofabrik)**
 https://download.geofabrik.de/
 
-### Nomatim
+**Nomatim**
 - web API: rate limited 1 req/s
 - local: only openstreetmaps for data sources, if address is slightly wrong, then no result (https://jeremymax.com/blog/nominatim-self-hosted-geocoding)
 
-### Pelias
+**Pelias**
 - https://www.pelias.io/
 - Elastic search
+- different data sources

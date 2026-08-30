@@ -1,12 +1,25 @@
-use geocoding::{Forward, Openstreetmap, Point, Reverse};
+mod db;
+mod forward;
+mod handlers;
+mod models;
+mod reverse;
 
-fn main() {
-    let osm = Openstreetmap::new();
-    let address = "Třinec";
-    let forward_res: Result<Vec<Point<f64>>, geocoding::GeocodingError> = osm.forward(&address);
-    dbg!(&forward_res);
-    let reverse_res = osm.reverse(forward_res.unwrap().first().expect("None"));
-    dbg!(&reverse_res);
-    // assert_eq!(res.unwrap(), vec![Point::new(11.5884858, 48.1700887)]);
-    // println!("Hello, world!");
+use axum::Router;
+use axum::routing::get;
+
+#[tokio::main]
+async fn main() {
+    env_logger::init();
+    dotenv::dotenv().ok();
+
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let pool = db::init_pool(&database_url).await;
+
+    let app = Router::new()
+        .route("/geocoding/{query}", get(handlers::geocode))
+        .with_state(pool);
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    log::info!("listening on http://0.0.0.0:3000");
+    axum::serve(listener, app).await.unwrap();
 }
