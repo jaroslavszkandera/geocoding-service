@@ -12,10 +12,10 @@ Download a map for testing (e.g. czech-republic-latest), launch the db and init 
 ```sh
 wget https://download.geofabrik.de/europe/czech-republic-latest.osm.pbf
 docker compose up -d
-# Password for the following cmd: test
-osm2pgsql -d geocoding -U test -H localhost -p 5432 -W \
+PGPASSWORD=test osm2pgsql -d geocoding -U test -H localhost -p 5432 \
   --create --slim -O flex -S preprocess_osm.lua \
   czech-republic-latest.osm.pbf
+psql "postgres://test:test@localhost:5432/geocoding" -f schema.sql
 ```
 > This is meant to be a replacement for the Java preprocessing. Takes < 5 minutes for Czechia.
 

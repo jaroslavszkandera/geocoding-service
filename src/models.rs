@@ -1,4 +1,70 @@
 use serde::Serialize;
+use sqlx::FromRow;
+
+#[derive(FromRow)]
+pub struct PlaceRow {
+    pub osm_id: i64,
+    pub name: String,
+    pub feature_type: String,
+    pub lon: f64,
+    pub lat: f64,
+    pub bbox_west: f64,
+    pub bbox_south: f64,
+    pub bbox_east: f64,
+    pub bbox_north: f64,
+    pub housenumber: Option<String>,
+    pub street: Option<String>,
+    pub city: Option<String>,
+    pub state: Option<String>,
+    pub country_code: Option<String>,
+    pub postcode: Option<String>,
+    pub score: f64,
+}
+
+pub const BBOX_GEOM_EXPR: &str = "ST_Envelope(ST_Buffer(geom::geography, (CASE feature_type \
+    WHEN 'city' THEN 20000.0 \
+    WHEN 'town' THEN 5000.0 \
+    WHEN 'village' THEN 1000.0 \
+    WHEN 'suburb' THEN 2000.0 \
+    ELSE 100.0 END)::double precision)::geometry)";
+
+impl PlaceRow {
+    pub fn into_feature(self) -> Feature {
+        let context = build_context(self.city, self.state, self.country_code);
+        let address = build_address(self.housenumber, self.street);
+
+        Feature {
+            id: format!("{}.{}", self.feature_type, self.osm_id),
+            text: self.name.clone(),
+            r#type: "Feature",
+            geometry: Geometry {
+                r#type: "Point",
+                coordinates: [self.lon, self.lat],
+            },
+            bbox: [
+                self.bbox_west,
+                self.bbox_south,
+                self.bbox_east,
+                self.bbox_north,
+            ],
+            center: [self.lon, self.lat],
+            place_name: self.name.clone(),
+            place_type: vec![self.feature_type.clone()],
+            place_type_name: vec![self.feature_type],
+            relevance: self.score,
+            properties: FeatureProperties {
+                ref_: format!("osm:{}", self.osm_id),
+                kind: None,
+                categories: vec![],
+                feature_tags: serde_json::json!({}),
+                place_designation: None,
+                additional: serde_json::json!({ "postcode": self.postcode }),
+            },
+            context,
+            address,
+        }
+    }
+}
 
 #[derive(Serialize)]
 pub struct FeatureCollection {
@@ -60,6 +126,59 @@ pub struct Geometry {
     pub coordinates: [f64; 2],
 }
 
+pub fn build_context(
+    city: Option<String>,
+    state: Option<String>,
+    country_code: Option<String>,
+) -> Vec<ContextItem> {
+    let mut context = Vec::new();
+    if let Some(city) = city {
+        context.push(ContextItem {
+            id: format!("place.{}", city),
+            text: city,
+            ref_: "city".into(),
+            kind: Some("city".into()),
+            categories: vec![],
+            feature_tags: serde_json::json!({}),
+            place_designation: None,
+            additional: serde_json::json!({}),
+        });
+    }
+    if let Some(state) = state {
+        context.push(ContextItem {
+            id: format!("region.{}", state),
+            text: state,
+            ref_: "region".into(),
+            kind: Some("region".into()),
+            categories: vec![],
+            feature_tags: serde_json::json!({}),
+            place_designation: None,
+            additional: serde_json::json!({}),
+        });
+    }
+    if let Some(country_code) = country_code {
+        context.push(ContextItem {
+            id: format!("country.{}", country_code),
+            text: country_code,
+            ref_: "country".into(),
+            kind: Some("country".into()),
+            categories: vec![],
+            feature_tags: serde_json::json!({}),
+            place_designation: None,
+            additional: serde_json::json!({}),
+        });
+    }
+    context
+}
+
+pub fn build_address(housenumber: Option<String>, street: Option<String>) -> Option<String> {
+    match (housenumber, street) {
+        (Some(h), Some(s)) => Some(format!("{} {}", h, s)),
+        (None, Some(s)) => Some(s),
+        _ => None,
+    }
+}
+
 pub fn attribution() -> String {
     r#"<a href="https://www.openstreetmap.org/copyright" target="_blank">&copy; OpenStreetMap contributors</a>"#.to_string()
 }
@@ -117,8 +236,14 @@ impl SearchParams {
         if self.query.len() > 256 {
             return Err(GeocodeError::QueryTooLong);
         }
-        if self.query.is_empty() {
+        let trimmed = self.query.trim();
+        if trimmed.is_empty() {
             return Err(GeocodeError::InvalidParams("query cannot be empty".into()));
+        }
+        if trimmed.chars().count() < 3 {
+            return Err(GeocodeError::InvalidParams(
+                "query must be at least 3 characters".into(),
+            ));
         }
         if let Some(limit) = self.limit {
             if !(1..=10).contains(&limit) {
@@ -182,6 +307,33 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_query_too_short() {
+        let p = SearchParams {
+            query: "ab".into(),
+            ..Default::default()
+        };
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_query_whitespace_only() {
+        let p = SearchParams {
+            query: "   ".into(),
+            ..Default::default()
+        };
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_query_min_length() {
+        let p = SearchParams {
+            query: "abc".into(),
+            ..Default::default()
+        };
+        assert!(p.validate().is_ok());
+    }
+
+    #[test]
     fn test_validate_query_max_length() {
         let p = SearchParams {
             query: "a".repeat(256),
@@ -193,7 +345,7 @@ mod tests {
     #[test]
     fn test_validate_limit_min() {
         let p = SearchParams {
-            query: "x".into(),
+            query: "xyz".into(),
             limit: Some(0),
             ..Default::default()
         };
@@ -203,7 +355,7 @@ mod tests {
     #[test]
     fn test_validate_limit_max() {
         let p = SearchParams {
-            query: "x".into(),
+            query: "xyz".into(),
             limit: Some(11),
             ..Default::default()
         };
@@ -213,7 +365,7 @@ mod tests {
     #[test]
     fn test_validate_limit_in_range() {
         let p = SearchParams {
-            query: "x".into(),
+            query: "xyz".into(),
             limit: Some(5),
             ..Default::default()
         };
@@ -223,7 +375,7 @@ mod tests {
     #[test]
     fn test_validate_bbox_west_ge_east() {
         let p = SearchParams {
-            query: "x".into(),
+            query: "xyz".into(),
             bbox: Some([15.0, 49.0, 14.0, 50.0]),
             ..Default::default()
         };
@@ -233,7 +385,7 @@ mod tests {
     #[test]
     fn test_validate_bbox_south_ge_north() {
         let p = SearchParams {
-            query: "x".into(),
+            query: "xyz".into(),
             bbox: Some([14.0, 51.0, 15.0, 50.0]),
             ..Default::default()
         };
@@ -243,7 +395,7 @@ mod tests {
     #[test]
     fn test_validate_bbox_out_of_range_lon() {
         let p = SearchParams {
-            query: "x".into(),
+            query: "xyz".into(),
             bbox: Some([200.0, 49.0, 15.0, 50.0]),
             ..Default::default()
         };
@@ -253,7 +405,7 @@ mod tests {
     #[test]
     fn test_validate_bbox_valid() {
         let p = SearchParams {
-            query: "x".into(),
+            query: "xyz".into(),
             bbox: Some([14.0, 49.0, 15.0, 50.0]),
             ..Default::default()
         };
@@ -263,7 +415,7 @@ mod tests {
     #[test]
     fn test_validate_proximity_lon_out_of_range() {
         let p = SearchParams {
-            query: "x".into(),
+            query: "xyz".into(),
             proximity: Some([200.0, 50.0]),
             ..Default::default()
         };
@@ -273,7 +425,7 @@ mod tests {
     #[test]
     fn test_validate_proximity_lat_out_of_range() {
         let p = SearchParams {
-            query: "x".into(),
+            query: "xyz".into(),
             proximity: Some([14.0, 95.0]),
             ..Default::default()
         };

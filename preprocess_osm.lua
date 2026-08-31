@@ -6,6 +6,12 @@ local places = osm2pgsql.define_table({
 		{ column = "feature_type", type = "text" },
 		{ column = "geom", type = "geometry", projection = 4326 },
 		{ column = "source", type = "text", not_null = true },
+		{ column = "housenumber", type = "text" },
+		{ column = "street", type = "text" },
+		{ column = "city", type = "text" },
+		{ column = "state", type = "text" },
+		{ column = "country_code", type = "text" },
+		{ column = "postcode", type = "text" },
 	},
 })
 
@@ -17,6 +23,17 @@ local function get_feature_type(tags)
 	return tags.place or tags.amenity or tags.shop or tags.landuse or tags.building
 end
 
+local function get_address(tags)
+	return {
+		housenumber = tags["addr:housenumber"],
+		street = tags["addr:street"],
+		city = tags["addr:city"],
+		state = tags["addr:state"],
+		country_code = tags["addr:country"],
+		postcode = tags["addr:postcode"],
+	}
+end
+
 function osm2pgsql.process_node(object)
 	local name = get_name(object.tags)
 	local ftype = get_feature_type(object.tags)
@@ -24,11 +41,18 @@ function osm2pgsql.process_node(object)
 		return
 	end
 
+	local addr = get_address(object.tags)
 	places:insert({
 		name = name,
 		feature_type = ftype,
 		geom = object:as_point(),
 		source = "osm",
+		housenumber = addr.housenumber,
+		street = addr.street,
+		city = addr.city,
+		state = addr.state,
+		country_code = addr.country_code,
+		postcode = addr.postcode,
 	})
 end
 
@@ -43,10 +67,17 @@ function osm2pgsql.process_way(object)
 		return
 	end
 
+	local addr = get_address(object.tags)
 	places:insert({
 		name = name,
 		feature_type = ftype,
 		geom = object:as_polygon():centroid(),
 		source = "osm",
+		housenumber = addr.housenumber,
+		street = addr.street,
+		city = addr.city,
+		state = addr.state,
+		country_code = addr.country_code,
+		postcode = addr.postcode,
 	})
 end

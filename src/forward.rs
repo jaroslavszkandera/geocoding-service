@@ -1,6 +1,6 @@
 use sqlx::{PgPool, query_builder::QueryBuilder};
 
-use crate::models::{Feature, FeatureCollection, FeatureProperties, Geometry, SearchParams};
+use crate::models::{BBOX_GEOM_EXPR, FeatureCollection, PlaceRow, SearchParams};
 
 pub async fn search(
     pool: &PgPool,
@@ -16,16 +16,13 @@ pub async fn search(
 
     let limit = params.limit.unwrap_or(5).min(10) as i64;
     let query = &params.query;
+    let prox_lon = params.proximity.map(|p| p[0]);
+    let prox_lat = params.proximity.map(|p| p[1]);
 
     let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
-        r#"
-        SELECT osm_id, name, feature_type,
-               ST_X(geom) AS lon, ST_Y(geom) AS lat,
-               similarity(name, "#,
+        "WITH candidates AS (SELECT osm_id, name, feature_type, geom, housenumber, street, \
+         city, state, country_code, postcode FROM places WHERE name % ",
     );
-
-    qb.push_bind(query);
-    qb.push(") AS score FROM places WHERE name % ");
     qb.push_bind(query);
 
     if let Some(bbox) = params.bbox {
@@ -55,47 +52,29 @@ pub async fn search(
         }
     }
 
-    qb.push(" ORDER BY score DESC LIMIT ");
+    qb.push(" ORDER BY name <-> ");
+    qb.push_bind(query);
+    qb.push(
+        " LIMIT 50) SELECT osm_id, name, feature_type, ST_X(geom) AS lon, ST_Y(geom) AS lat, \
+         ST_XMin(bbox_geom) AS bbox_west, ST_YMin(bbox_geom) AS bbox_south, \
+         ST_XMax(bbox_geom) AS bbox_east, ST_YMax(bbox_geom) AS bbox_north, \
+         housenumber, street, city, state, country_code, postcode, \
+         (similarity(name, ",
+    );
+    qb.push_bind(query);
+    qb.push(
+        ") * 0.7 + COALESCE(1.0 / (1.0 + ST_Distance(geom::geography, ST_SetSRID(ST_MakePoint(",
+    );
+    qb.push_bind(prox_lon);
+    qb.push(", ");
+    qb.push_bind(prox_lat);
+    qb.push("), 4326)::geography) / 1000.0), 0) * 0.3) AS score FROM (SELECT *, ");
+    qb.push(BBOX_GEOM_EXPR);
+    qb.push(" AS bbox_geom FROM candidates) sub ORDER BY score DESC LIMIT ");
     qb.push_bind(limit);
 
-    let rows = qb
-        .build_query_as::<(i64, String, String, f64, f64, f32)>()
-        .fetch_all(pool)
-        .await?;
-
-    let features: Vec<_> = rows
-        .into_iter()
-        .map(|(osm_id, name, feature_type, lon, lat, score)| {
-            let epsilon = 0.001;
-            let bbox = [lon - epsilon, lat - epsilon, lon + epsilon, lat + epsilon];
-
-            Feature {
-                id: format!("{}.{}", feature_type, osm_id),
-                text: name.clone(),
-                r#type: "Feature",
-                geometry: Geometry {
-                    r#type: "Point",
-                    coordinates: [lon, lat],
-                },
-                bbox,
-                center: [lon, lat],
-                place_name: name.clone(),
-                place_type: vec![feature_type.clone()],
-                place_type_name: vec![feature_type],
-                relevance: score as f64,
-                properties: FeatureProperties {
-                    ref_: format!("osm:{}", osm_id),
-                    kind: None,
-                    categories: vec![],
-                    feature_tags: serde_json::json!({}),
-                    place_designation: None,
-                    additional: serde_json::json!({}),
-                },
-                context: vec![],
-                address: None,
-            }
-        })
-        .collect();
+    let rows = qb.build_query_as::<PlaceRow>().fetch_all(pool).await?;
+    let features: Vec<_> = rows.into_iter().map(PlaceRow::into_feature).collect();
 
     log::info!("Forward geocoding returned {} results", features.len());
     Ok(FeatureCollection {
