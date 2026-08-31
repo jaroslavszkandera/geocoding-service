@@ -1,11 +1,6 @@
-mod db;
-mod forward;
-mod handlers;
-mod models;
-mod reverse;
-
 use axum::Router;
 use axum::routing::get;
+use geocoding_service::{db, handlers};
 
 #[tokio::main]
 async fn main() {

@@ -28,3 +28,4 @@ target
 # Other
 *.osm.pbf
 .env
+*.pdf
