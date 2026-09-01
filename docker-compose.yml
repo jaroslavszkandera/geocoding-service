@@ -11,7 +11,7 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./00_extensions.sql:/docker-entrypoint-initdb.d/01_extensions.sql
+      - ./db/migrations/00_extensions.sql:/docker-entrypoint-initdb.d/01_extensions.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U test -d geocoding"]
       interval: 5s

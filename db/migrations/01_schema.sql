@@ -1,5 +1,5 @@
 -- Run this manually AFTER `osm2pgsql --create` has imported data.
---   psql "$DATABASE_URL" -f schema.sql
+--   psql "$DATABASE_URL" -f db/migrations/01_schema.sql
 
 ALTER TABLE places
     ADD COLUMN IF NOT EXISTS bbox_west DOUBLE PRECISION GENERATED ALWAYS AS (ST_X(geom) - CASE feature_type WHEN 'city' THEN 0.18 WHEN 'town' THEN 0.045 WHEN 'village' THEN 0.009 WHEN 'suburb' THEN 0.018 ELSE 0.0009 END) STORED,

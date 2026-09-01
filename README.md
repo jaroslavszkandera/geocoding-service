@@ -10,12 +10,13 @@ Download necessary packages
 
 Download a map for testing (e.g. czech-republic-latest), launch the db and init the db.
 ```sh
-wget https://download.geofabrik.de/europe/czech-republic-latest.osm.pbf
+mkdir -p data
+wget -c -P data https://download.geofabrik.de/europe/czech-republic-latest.osm.pbf
 docker compose up -d
 PGPASSWORD=test osm2pgsql -d geocoding -U test -H localhost -p 5432 \
-  --create --slim -O flex -S preprocess_osm.lua \
-  czech-republic-latest.osm.pbf
-psql "postgres://test:test@localhost:5432/geocoding" -f schema.sql
+  --create --slim -O flex -S db/osm2pgsql/preprocess_osm.lua \
+  data/czech-republic-latest.osm.pbf
+psql "postgres://test:test@localhost:5432/geocoding" -f db/migrations/01_schema.sql
 ```
 > This is meant to be a replacement for the Java preprocessing. Takes < 5 minutes for Czechia.
 
