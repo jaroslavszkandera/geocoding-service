@@ -15,12 +15,37 @@ local places = osm2pgsql.define_table({
 	},
 })
 
+local FEATURE_TYPE_KEYS = {
+	"place",
+	"historic",
+	"tourism",
+	"leisure",
+	"natural",
+	"man_made",
+	"amenity",
+	"shop",
+	"landuse",
+	"building",
+}
+
+local FEATURE_TYPE_DENY = {
+	information = true,
+	locality = true,
+	yes = true,
+}
+
 local function get_name(tags)
 	return tags.name or tags["name:cs"] or tags["name:en"]
 end
 
 local function get_feature_type(tags)
-	return tags.place or tags.amenity or tags.shop or tags.landuse or tags.building
+	for _, key in ipairs(FEATURE_TYPE_KEYS) do
+		local v = tags[key]
+		if v and v ~= "" and not FEATURE_TYPE_DENY[v] then
+			return v
+		end
+	end
+	return nil
 end
 
 local function get_address(tags)
