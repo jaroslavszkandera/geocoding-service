@@ -47,10 +47,6 @@ impl PlaceRow {
             relevance: self.score,
             properties: FeatureProperties {
                 ref_: format!("osm:{}", self.osm_id),
-                kind: None,
-                categories: vec![],
-                feature_tags: serde_json::json!({}),
-                place_designation: None,
                 additional: serde_json::json!({ "postcode": self.postcode }),
             },
             context,
@@ -90,10 +86,6 @@ pub struct Feature {
 pub struct FeatureProperties {
     #[serde(rename = "ref")]
     pub ref_: String,
-    pub kind: Option<String>,
-    pub categories: Vec<String>,
-    pub feature_tags: serde_json::Value,
-    pub place_designation: Option<String>,
     #[serde(flatten)]
     pub additional: serde_json::Value,
 }
@@ -105,11 +97,6 @@ pub struct ContextItem {
     #[serde(rename = "ref")]
     pub ref_: String,
     pub kind: Option<String>,
-    pub categories: Vec<String>,
-    pub feature_tags: serde_json::Value,
-    pub place_designation: Option<String>,
-    #[serde(flatten)]
-    pub additional: serde_json::Value,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -131,10 +118,6 @@ pub fn build_context(
             text: city,
             ref_: "city".into(),
             kind: Some("city".into()),
-            categories: vec![],
-            feature_tags: serde_json::json!({}),
-            place_designation: None,
-            additional: serde_json::json!({}),
         });
     }
     if let Some(state) = state {
@@ -143,10 +126,6 @@ pub fn build_context(
             text: state,
             ref_: "region".into(),
             kind: Some("region".into()),
-            categories: vec![],
-            feature_tags: serde_json::json!({}),
-            place_designation: None,
-            additional: serde_json::json!({}),
         });
     }
     if let Some(country_code) = country_code {
@@ -155,10 +134,6 @@ pub fn build_context(
             text: country_code,
             ref_: "country".into(),
             kind: Some("country".into()),
-            categories: vec![],
-            feature_tags: serde_json::json!({}),
-            place_designation: None,
-            additional: serde_json::json!({}),
         });
     }
     context
