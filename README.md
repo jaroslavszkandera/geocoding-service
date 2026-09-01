@@ -32,116 +32,101 @@ RUST_LOG=info cargo r
 
 Query the service:
 ```sh
-curl http://localhost:3000/geocoding/Praha.json
-curl http://localhost:3000/geocoding/14.4016,50.0910.json
+curl 'http://localhost:3000/geocoding/Prague.json?key=test&limit=3'
+curl 'http://localhost:3000/geocoding/18.6274503,49.6279094.json?key=test'
 ```
-
-
-TODO
 
 ## Architectural decisions
 
-- Rust because of familiarity and time frame of implementation.
-- Copy the current MapTiler API:
-    - (resp: 200/400/403)
+- Standalone Rust binary with Tokio + Axum + sqlx, asynchronous service
+- PostgreSQL + PostGIS + pg_trgm
+    - PostGIS gives native spatial types, GiST indexes, bbox filtering, NN search (used by Nominatim)
+    - pg_trgm: fuzzy search
+    - pregenerated bbox for city, village and search vector for text
+- Inspired by the current MapTiler API:
+    - (resp: 200/400/403 (+500))
     - https://api.maptiler.com/geocoding/Zurich.json?key=YOUR_SECRET_TOKEN (secret token does not matter here much)
 
-FeatureCollection where every item is represented as a GeoJSON Feature
+FeatureCollection where every item is represented as a GeoJSON Feature (e.g. reverse geocoding resp):
 ```json
 {
   "type": "FeatureCollection",
   "features": [
     {
-      "id": "municipality.46425",
-      "text": "Paris",
-      "language": "en",
-      "^text_(\\w\\w)": "string",
-      "^language_(\\w\\w)": "string",
-      "additionalProperty": "anything",
+      "id": "mountain_rescue.-98416612",
+      "text": "Horská služba Javorový",
       "type": "Feature",
-      "properties": {
-        "ref": "osm:r71525",
-        "country_code": "fr",
-        "kind": "road",
-        "categories": [
-          "restaurant"
-        ],
-        "feature_tags": {
-          "additionalProperty": "string"
-        },
-        "place_designation": "city",
-        "additionalProperty": "anything"
-      },
       "geometry": {
         "type": "Point",
         "coordinates": [
-          8.528509,
-          47.3774434
+          18.627200443200163,
+          49.62821274643137
         ]
       },
       "bbox": [
-        5.9559,
-        45.818,
-        10.4921,
-        47.8084
+        18.62630044320016,
+        49.62731274643137,
+        18.628100443200164,
+        49.629112746431375
       ],
-      "center": "[Circular]",
-      "place_name": "string",
-      "matching_place_name": "string",
-      "matching_text": "string",
+      "center": [
+        18.627200443200163,
+        49.62821274643137
+      ],
+      "place_name": "Horská služba Javorový",
       "place_type": [
-        "continental_marine"
+        "mountain_rescue"
       ],
       "place_type_name": [
-        "string"
+        "mountain_rescue"
       ],
-      "relevance": 1,
-      "context": [
-        {
-          "ref": "osm:r71525",
-          "country_code": "fr",
-          "kind": "road",
-          "categories": [
-            "restaurant"
-          ],
-          "feature_tags": {
-            "additionalProperty": "string"
-          },
-          "place_designation": "city",
-          "additionalProperty": "anything",
-          "id": "municipality.46425",
-          "text": "Paris",
-          "language": "en",
-          "^text_(\\w\\w)": "string",
-          "^language_(\\w\\w)": "string"
-        }
-      ],
-      "address": "string",
-      "^place_name_(\\w\\w)": "string"
+      "relevance": 0.9631458505177869,
+      "properties": {
+        "ref": "osm:-98416612",
+        "postcode": null
+      },
+      "context": [],
+      "address": null
     }
   ],
   "query": [
-    "string"
+    "18.6274503,49.6279094"
   ],
-  "attribution": "<a href=\"https://www.maptiler.com/copyright/\" target=\"_blank\">&copy; MapTiler</a> <a href=\"https://www.openstreetmap.org/copyright\" target=\"_blank\">&copy; OpenStreetMap contributors</a>"
+  "attribution": "<a href=\"https://www.openstreetmap.org/copyright\" target=\"_blank\">&copy; OpenStreetMap contributors</a>"
 }
 ```
 
 ## Rationale behind the chosen tech stack
 
+- Rust because of familiarity and time frame of implementation. Would have chosen TypeScript otherwise based on the considerations section
+- PostgreSQL + PostGIS is proven technology concerning spatial search
+
 ## Future improvements or scalability strategies
 
+- Read replicas (better read speed)
+- Connection pool sizing tied to server core count
+- Cache common queries for forward queries to RAM - Redis with LRU or TTL
+- Partition/shard by country/region
+- Better osm2pgsql preprocessing (administrative bounderies, POIs, importance score, ...) or using a search engine like Nominatim
+
 ## Consideration
+
 ### One of our input database is OpenStreetMap
+- Used in my implementation
+- Regional quality varies, potentially inconsistent tagging, free, crowd-sourced
+
 ### The server is now using TypeScript
+- Rust chosen only for familiarity, best to adapt to TypeScript after a while
+
 ### Data are being pre-processed by Java
+- Switch to osmosis from osm2pgsql
 
 ### Data sources (Research)
 
 **OpenStreetMap (geofabrik)**
 https://download.geofabrik.de/
 
-**Nomatim**
+**Nominatim**
 - web API: rate limited 1 req/s
 - local: only openstreetmaps for data sources, if address is slightly wrong, then no result (https://jeremymax.com/blog/nominatim-self-hosted-geocoding)
 
@@ -149,3 +134,10 @@ https://download.geofabrik.de/
 - https://www.pelias.io/
 - Elastic search
 - different data sources
+
+**GeoNames**
+
+**OpenAddresses.io**
+
+**Who's on First (Mapzen/Overture heritage)**
+
