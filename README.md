@@ -119,7 +119,7 @@ FeatureCollection where every item is represented as a GeoJSON Feature (e.g. rev
 - Rust chosen only for familiarity, best to adapt to TypeScript after a while
 
 ### Data are being pre-processed by Java
-- Switch to osmosis from osm2pgsql
+- Switch to Osmosis from osm2pgsql
 
 ### Data sources (Research)
 

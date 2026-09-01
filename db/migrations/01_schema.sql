@@ -1,20 +1,30 @@
 -- Run this manually AFTER `osm2pgsql --create` has imported data.
 --   psql "$DATABASE_URL" -f db/migrations/01_schema.sql
 
+-- Extension for diacritic-insensitive search.
+CREATE EXTENSION IF NOT EXISTS unaccent;
+
+-- unaccent() is STABLE by default; GENERATED ALWAYS AS columns require IMMUTABLE.
+-- Wrap it so generated columns and indexes are usable.
+CREATE OR REPLACE FUNCTION immutable_unaccent(text)
+RETURNS text AS $$ SELECT unaccent('unaccent', $1) $$
+LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT;
+
 ALTER TABLE places
     ADD COLUMN IF NOT EXISTS bbox_west DOUBLE PRECISION GENERATED ALWAYS AS (ST_X(geom) - CASE feature_type WHEN 'city' THEN 0.18 WHEN 'town' THEN 0.045 WHEN 'village' THEN 0.009 WHEN 'suburb' THEN 0.018 ELSE 0.0009 END) STORED,
     ADD COLUMN IF NOT EXISTS bbox_south DOUBLE PRECISION GENERATED ALWAYS AS (ST_Y(geom) - CASE feature_type WHEN 'city' THEN 0.18 WHEN 'town' THEN 0.045 WHEN 'village' THEN 0.009 WHEN 'suburb' THEN 0.018 ELSE 0.0009 END) STORED,
     ADD COLUMN IF NOT EXISTS bbox_east DOUBLE PRECISION GENERATED ALWAYS AS (ST_X(geom) + CASE feature_type WHEN 'city' THEN 0.18 WHEN 'town' THEN 0.045 WHEN 'village' THEN 0.009 WHEN 'suburb' THEN 0.018 ELSE 0.0009 END) STORED,
     ADD COLUMN IF NOT EXISTS bbox_north DOUBLE PRECISION GENERATED ALWAYS AS (ST_Y(geom) + CASE feature_type WHEN 'city' THEN 0.18 WHEN 'town' THEN 0.045 WHEN 'village' THEN 0.009 WHEN 'suburb' THEN 0.018 ELSE 0.0009 END) STORED,
-    ADD COLUMN IF NOT EXISTS search_vector tsvector GENERATED ALWAYS AS (to_tsvector('simple', name)) STORED;
+    ADD COLUMN IF NOT EXISTS name_unaccent text GENERATED ALWAYS AS (immutable_unaccent(name)) STORED,
+    ADD COLUMN IF NOT EXISTS search_vector tsvector GENERATED ALWAYS AS (to_tsvector('simple', immutable_unaccent(name))) STORED;
 
 -- Spatial index: powers bbox filtering and KNN ordering.
 CREATE INDEX IF NOT EXISTS idx_places_geom ON places USING GIST (geom);
--- Trigram GIN: fuzzy filtering and pattern filtering.
-CREATE INDEX IF NOT EXISTS idx_places_name_trgm ON places USING GIN (name gin_trgm_ops);
--- Trigram GIST: similarity-ranking.
-CREATE INDEX IF NOT EXISTS idx_places_name_trgm_gist ON places USING GIST (name gist_trgm_ops);
+-- Trigram GIN on diacritic-stripped name: fuzzy filtering and pattern filtering.
+CREATE INDEX IF NOT EXISTS idx_places_name_unaccent_trgm ON places USING GIN (name_unaccent gin_trgm_ops);
+-- Trigram GIST on diacritic-stripped name: similarity-ranking.
+CREATE INDEX IF NOT EXISTS idx_places_name_unaccent_trgm_gist ON places USING GIST (name_unaccent gist_trgm_ops);
 -- Full-text GIN: search_vector.
 CREATE INDEX IF NOT EXISTS idx_places_search ON places USING GIN (search_vector);
--- exact-match, a plain btree on lower(name)
-CREATE INDEX IF NOT EXISTS idx_places_name_lower ON places (lower(name));
+-- exact-match, a plain btree on lower(name_unaccent) for normalized equality.
+CREATE INDEX IF NOT EXISTS idx_places_name_unaccent_lower ON places (lower(name_unaccent));

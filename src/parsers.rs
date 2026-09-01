@@ -43,6 +43,11 @@ pub fn parse_coords(s: &str) -> Option<(f64, f64)> {
     if (-180.0..=180.0).contains(&lon) && (-90.0..=90.0).contains(&lat) {
         Some((lon, lat))
     } else {
+        log::debug!(
+            "longitude ({}) or latitude ({}) outside of valid range",
+            lon,
+            lat
+        );
         None
     }
 }
@@ -63,4 +68,3 @@ fn reject_non_finite(coords: &[f64], name: &str) -> Result<(), GeocodeError> {
     }
     Ok(())
 }
-
