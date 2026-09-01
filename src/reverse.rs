@@ -1,6 +1,5 @@
-use sqlx::{PgPool, query_builder::QueryBuilder};
-
-use crate::models::{BBOX_GEOM_EXPR, FeatureCollection, PlaceRow, SearchParams};
+use crate::models::{FeatureCollection, PlaceRow, SearchParams};
+use sqlx::PgPool;
 
 pub async fn search(
     pool: &PgPool,
@@ -8,86 +7,57 @@ pub async fn search(
     lat: f64,
     params: &SearchParams,
 ) -> Result<FeatureCollection, crate::models::GeocodeError> {
-    log::info!(
-        "Reverse geocoding query: ({}, {}), params: {:?}",
-        lon,
-        lat,
-        params
-    );
     params.validate()?;
     params.require_api_key()?;
 
     let limit = params.limit.unwrap_or(1).min(10) as i64;
     let knn_limit = (limit * 3).max(10);
-    let query_str = format!("{},{}", lon, lat);
+    let bbox = params.bbox.unwrap_or([-180.0, -90.0, 180.0, 90.0]);
+    let use_bbox = params.bbox.is_some();
 
-    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
-        "WITH nearest AS (SELECT osm_id, name, feature_type, geom, housenumber, street, city, \
-         state, country_code, postcode FROM places",
+    log::debug!(
+        "reverse search [knn] lon={} lat={} knn_limit={}",
+        lon,
+        lat,
+        knn_limit
     );
 
-    if let Some(bbox) = params.bbox {
-        qb.push(" WHERE geom && ST_MakeEnvelope(");
-        qb.push_bind(bbox[0]);
-        qb.push(", ");
-        qb.push_bind(bbox[1]);
-        qb.push(", ");
-        qb.push_bind(bbox[2]);
-        qb.push(", ");
-        qb.push_bind(bbox[3]);
-        qb.push(", 4326) ");
-    }
+    let rows = sqlx::query_as::<_, PlaceRow>(
+        r#"
+        WITH nearest AS (
+            SELECT osm_id, name, feature_type, geom, housenumber, street, city, state, country_code, postcode,
+                   bbox_west, bbox_south, bbox_east, bbox_north
+            FROM places
+            WHERE ($1::boolean = false OR geom && ST_MakeEnvelope($2, $3, $4, $5, 4326))
+              AND ($6::text[] IS NULL OR (($7::boolean = false AND feature_type = ANY($6)) OR ($7::boolean = true AND feature_type != ALL($6))))
+            ORDER BY geom <-> ST_SetSRID(ST_MakePoint($8, $9), 4326)
+            LIMIT $10
+        )
+        SELECT osm_id, name, feature_type, ST_X(geom) AS lon, ST_Y(geom) AS lat,
+               bbox_west, bbox_south, bbox_east, bbox_north,
+               housenumber, street, city, state, country_code, postcode,
+               1.0 / (1.0 + ST_Distance(geom::geography, ST_SetSRID(ST_MakePoint($8, $9), 4326)::geography) / 1000.0) AS score
+        FROM nearest
+        ORDER BY score DESC LIMIT $11
+        "#
+    )
+    .bind(use_bbox).bind(bbox[0]).bind(bbox[1]).bind(bbox[2]).bind(bbox[3])
+    .bind(params.types.as_deref()).bind(params.exclude_types)
+    .bind(lon).bind(lat).bind(knn_limit).bind(limit)
+    .fetch_all(pool).await?;
 
-    if let Some(types) = &params.types {
-        if !types.is_empty() {
-            if params.bbox.is_some() {
-                qb.push(" AND ");
-            } else {
-                qb.push(" WHERE ");
-            }
-            qb.push("feature_type ");
-            if params.exclude_types {
-                qb.push("NOT ");
-            }
-            qb.push("IN (");
-            let mut separated = qb.separated(", ");
-            for t in types {
-                separated.push_bind(t);
-            }
-            separated.push_unseparated(") ");
-        }
-    }
-
-    qb.push(" ORDER BY geom <-> ST_SetSRID(ST_MakePoint(");
-    qb.push_bind(lon);
-    qb.push(", ");
-    qb.push_bind(lat);
-    qb.push("), 4326) LIMIT ");
-    qb.push_bind(knn_limit);
-
-    qb.push(
-        ") SELECT osm_id, name, feature_type, ST_X(geom) AS lon, ST_Y(geom) AS lat, \
-         ST_XMin(bbox_geom) AS bbox_west, ST_YMin(bbox_geom) AS bbox_south, \
-         ST_XMax(bbox_geom) AS bbox_east, ST_YMax(bbox_geom) AS bbox_north, \
-         housenumber, street, city, state, country_code, postcode, \
-         1.0 / (1.0 + ST_Distance(geom::geography, ST_SetSRID(ST_MakePoint(",
+    log::debug!(
+        "reverse search [exact-rank] lon={} lat={} rows={}",
+        lon,
+        lat,
+        rows.len()
     );
-    qb.push_bind(lon);
-    qb.push(", ");
-    qb.push_bind(lat);
-    qb.push("), 4326)::geography) / 1000.0) AS score FROM (SELECT *, ");
-    qb.push(BBOX_GEOM_EXPR);
-    qb.push(" AS bbox_geom FROM nearest) sub ORDER BY score DESC LIMIT ");
-    qb.push_bind(limit);
 
-    let rows = qb.build_query_as::<PlaceRow>().fetch_all(pool).await?;
     let features: Vec<_> = rows.into_iter().map(PlaceRow::into_feature).collect();
-
-    log::info!("Reverse geocoding returned {} results", features.len());
     Ok(FeatureCollection {
         r#type: "FeatureCollection",
         features,
-        query: vec![query_str],
+        query: vec![format!("{},{}", lon, lat)],
         attribution: crate::models::attribution(),
     })
 }

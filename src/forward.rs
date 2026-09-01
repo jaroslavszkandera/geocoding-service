@@ -1,86 +1,145 @@
-use sqlx::{PgPool, query_builder::QueryBuilder};
+use crate::models::{FeatureCollection, PlaceRow, SearchParams};
+use sqlx::PgPool;
 
-use crate::models::{BBOX_GEOM_EXPR, FeatureCollection, PlaceRow, SearchParams};
+const EXACT_SQL: &str = r#"
+    SELECT osm_id, name, feature_type, ST_X(geom) AS lon, ST_Y(geom) AS lat,
+           bbox_west, bbox_south, bbox_east, bbox_north,
+           housenumber, street, city, state, country_code, postcode,
+           1.0::float8 AS score
+    FROM places
+    WHERE lower(name) = lower($1)
+      AND ($2::boolean = false OR geom && ST_MakeEnvelope($3, $4, $5, $6, 4326))
+      AND ($7::text[] IS NULL OR (($8::boolean = false AND feature_type = ANY($7)) OR ($8::boolean = true AND feature_type != ALL($7))))
+    LIMIT $9
+"#;
+
+const FTS_SQL: &str = r#"
+    SELECT osm_id, name, feature_type, ST_X(geom) AS lon, ST_Y(geom) AS lat,
+           bbox_west, bbox_south, bbox_east, bbox_north,
+           housenumber, street, city, state, country_code, postcode,
+           ts_rank(search_vector, to_tsquery('simple', $1))::float8 AS score
+    FROM places
+    WHERE search_vector @@ to_tsquery('simple', $1)
+      AND ($2::boolean = false OR geom && ST_MakeEnvelope($3, $4, $5, $6, 4326))
+      AND ($7::text[] IS NULL OR (($8::boolean = false AND feature_type = ANY($7)) OR ($8::boolean = true AND feature_type != ALL($7))))
+    ORDER BY score DESC
+    LIMIT $9
+"#;
+
+const TRGM_SQL: &str = r#"
+    SELECT osm_id, name, feature_type, ST_X(geom) AS lon, ST_Y(geom) AS lat,
+           bbox_west, bbox_south, bbox_east, bbox_north,
+           housenumber, street, city, state, country_code, postcode,
+           similarity(name, $1)::float8 AS score
+    FROM places
+    WHERE name % $1
+      AND ($2::boolean = false OR geom && ST_MakeEnvelope($3, $4, $5, $6, 4326))
+      AND ($7::text[] IS NULL OR (($8::boolean = false AND feature_type = ANY($7)) OR ($8::boolean = true AND feature_type != ALL($7))))
+    ORDER BY name <-> $1
+    LIMIT $9
+"#;
+
+fn build_prefix_tsquery(query: &str) -> String {
+    let mut tokens: Vec<String> = query
+        .split_whitespace()
+        .map(|t| format!("'{}'", t.replace('\'', "''")))
+        .collect();
+    if let Some(last) = tokens.last_mut() {
+        last.push_str(":*");
+    }
+    tokens.join(" & ")
+}
 
 pub async fn search(
     pool: &PgPool,
     params: &SearchParams,
 ) -> Result<FeatureCollection, crate::models::GeocodeError> {
-    log::info!(
-        "Forward geocoding query: '{}', params: {:?}",
-        params.query,
-        params
-    );
     params.validate()?;
     params.require_api_key()?;
 
     let limit = params.limit.unwrap_or(5).min(10) as i64;
-    let query = &params.query;
-    let prox_lon = params.proximity.map(|p| p[0]);
-    let prox_lat = params.proximity.map(|p| p[1]);
+    let bbox = params.bbox.unwrap_or([-180.0, -90.0, 180.0, 90.0]);
+    let use_bbox = params.bbox.is_some();
+    let ts_query = build_prefix_tsquery(&params.query);
 
-    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
-        "WITH candidates AS (SELECT osm_id, name, feature_type, geom, housenumber, street, \
-         city, state, country_code, postcode FROM places WHERE name % ",
+    let mut rows = sqlx::query_as::<_, PlaceRow>(EXACT_SQL)
+        .bind(&params.query)
+        .bind(use_bbox)
+        .bind(bbox[0])
+        .bind(bbox[1])
+        .bind(bbox[2])
+        .bind(bbox[3])
+        .bind(params.types.as_deref())
+        .bind(params.exclude_types)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+    log::debug!(
+        "forward search [exact] query='{}' rows={}",
+        params.query,
+        rows.len()
     );
-    qb.push_bind(query);
 
-    if let Some(bbox) = params.bbox {
-        qb.push(" AND geom && ST_MakeEnvelope(");
-        qb.push_bind(bbox[0]);
-        qb.push(", ");
-        qb.push_bind(bbox[1]);
-        qb.push(", ");
-        qb.push_bind(bbox[2]);
-        qb.push(", ");
-        qb.push_bind(bbox[3]);
-        qb.push(", 4326) ");
+    if rows.is_empty() {
+        rows = sqlx::query_as::<_, PlaceRow>(FTS_SQL)
+            .bind(&ts_query)
+            .bind(use_bbox)
+            .bind(bbox[0])
+            .bind(bbox[1])
+            .bind(bbox[2])
+            .bind(bbox[3])
+            .bind(params.types.as_deref())
+            .bind(params.exclude_types)
+            .bind(limit)
+            .fetch_all(pool)
+            .await?;
+        log::debug!(
+            "forward search [fts] query='{}' tsquery='{}' rows={}",
+            params.query,
+            ts_query,
+            rows.len()
+        );
     }
 
-    if let Some(types) = &params.types {
-        if !types.is_empty() {
-            qb.push(" AND feature_type ");
-            if params.exclude_types {
-                qb.push("NOT ");
-            }
-            qb.push("IN (");
-            let mut separated = qb.separated(", ");
-            for t in types {
-                separated.push_bind(t);
-            }
-            separated.push_unseparated(") ");
+    if rows.is_empty() {
+        rows = sqlx::query_as::<_, PlaceRow>(TRGM_SQL)
+            .bind(&params.query)
+            .bind(use_bbox)
+            .bind(bbox[0])
+            .bind(bbox[1])
+            .bind(bbox[2])
+            .bind(bbox[3])
+            .bind(params.types.as_deref())
+            .bind(params.exclude_types)
+            .bind(limit)
+            .fetch_all(pool)
+            .await?;
+        log::debug!(
+            "forward search [trgm] query='{}' rows={}",
+            params.query,
+            rows.len()
+        );
+    }
+
+    if let Some(prox) = params.proximity {
+        for row in &mut rows {
+            let dist_deg = ((row.lon - prox[0]).powi(2) + (row.lat - prox[1]).powi(2)).sqrt();
+            let dist_km = dist_deg * 111.0;
+            row.score = (row.score * 0.7) + ((1.0 / (1.0 + dist_km)) * 0.3);
         }
+        rows.sort_by(|a, b| b.score.total_cmp(&a.score));
+        log::debug!(
+            "forward search [proximity-rerank] proximity={:?} rows={}",
+            prox,
+            rows.len()
+        );
     }
 
-    qb.push(" ORDER BY name <-> ");
-    qb.push_bind(query);
-    qb.push(
-        " LIMIT 50) SELECT osm_id, name, feature_type, ST_X(geom) AS lon, ST_Y(geom) AS lat, \
-         ST_XMin(bbox_geom) AS bbox_west, ST_YMin(bbox_geom) AS bbox_south, \
-         ST_XMax(bbox_geom) AS bbox_east, ST_YMax(bbox_geom) AS bbox_north, \
-         housenumber, street, city, state, country_code, postcode, \
-         (similarity(name, ",
-    );
-    qb.push_bind(query);
-    qb.push(
-        ") * 0.7 + COALESCE(1.0 / (1.0 + ST_Distance(geom::geography, ST_SetSRID(ST_MakePoint(",
-    );
-    qb.push_bind(prox_lon);
-    qb.push(", ");
-    qb.push_bind(prox_lat);
-    qb.push("), 4326)::geography) / 1000.0), 0) * 0.3) AS score FROM (SELECT *, ");
-    qb.push(BBOX_GEOM_EXPR);
-    qb.push(" AS bbox_geom FROM candidates) sub ORDER BY score DESC LIMIT ");
-    qb.push_bind(limit);
-
-    let rows = qb.build_query_as::<PlaceRow>().fetch_all(pool).await?;
     let features: Vec<_> = rows.into_iter().map(PlaceRow::into_feature).collect();
-
-    log::info!("Forward geocoding returned {} results", features.len());
     Ok(FeatureCollection {
         r#type: "FeatureCollection",
         features,
-        query: vec![query.to_string()],
+        query: vec![params.query.clone()],
         attribution: crate::models::attribution(),
     })
 }

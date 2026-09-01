@@ -21,13 +21,6 @@ pub struct PlaceRow {
     pub score: f64,
 }
 
-pub const BBOX_GEOM_EXPR: &str = "ST_Envelope(ST_Buffer(geom::geography, (CASE feature_type \
-    WHEN 'city' THEN 20000.0 \
-    WHEN 'town' THEN 5000.0 \
-    WHEN 'village' THEN 1000.0 \
-    WHEN 'suburb' THEN 2000.0 \
-    ELSE 100.0 END)::double precision)::geometry)";
-
 impl PlaceRow {
     pub fn into_feature(self) -> Feature {
         let context = build_context(self.city, self.state, self.country_code);
